@@ -1,0 +1,155 @@
+version: '3.8'
+
+services:
+  # PostgreSQL
+  postgres:
+    image: postgres:15
+    container_name: postgres_lab
+    environment:
+      POSTGRES_DB: bigdata_lab
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data:/data:ro
+      - ./init:/docker-entrypoint-initdb.d
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - bigdata_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Spark + Jupyter
+  spark:
+    image: jupyter/pyspark-notebook:spark-3.4.1
+    container_name: spark_lab
+    ports:
+      - "8888:8888"
+      - "4040:4040"
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - GRANT_SUDO=yes
+    volumes:
+      - ./spark:/home/jovyan/work
+      - ./data:/data:ro
+    networks:
+      - bigdata_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: start-notebook.sh --NotebookApp.token=''
+
+  # ClickHouse
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.12
+    container_name: clickhouse_lab
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: reports
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    networks:
+      - bigdata_net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Cassandra
+  cassandra:
+    image: cassandra:4.1
+    container_name: cassandra_lab
+    ports:
+      - "9042:9042"
+    environment:
+      - MAX_HEAP_SIZE=512M
+      - HEAP_NEWSIZE=100M
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    networks:
+      - bigdata_net
+    healthcheck:
+      test: ["CMD", "cqlsh", "-u", "cassandra", "-p", "cassandra", "-e", "describe keyspaces"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    profiles:
+      - optional
+
+  # MongoDB
+  mongodb:
+    image: mongo:7.0
+    container_name: mongodb_lab
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: root
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - bigdata_net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - optional
+
+  # Neo4j
+  neo4j:
+    image: neo4j:5.14
+    container_name: neo4j_lab
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/password
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - neo4j_data:/data
+    networks:
+      - bigdata_net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7474"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - optional
+
+  # Valkey (Redis-compatible)
+  valkey:
+    image: valkey/valkey:7.2
+    container_name: valkey_lab
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkey_data:/data
+    networks:
+      - bigdata_net
+    command: valkey-server --appendonly yes
+    profiles:
+      - optional
+
+networks:
+  bigdata_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  cassandra_data:
+  mongodb_data:
+  neo4j_data:
+  valkey_data:
