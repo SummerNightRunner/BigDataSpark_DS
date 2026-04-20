@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+.ipynb_checkpoints/
+
+.DS_Store
+
+.env
+.env.*
+!.env.example
+
+spark-warehouse/
+metastore_db/
+derby.log
+
+*.log

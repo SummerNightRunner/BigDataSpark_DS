@@ -210,6 +210,26 @@ docker exec valkey_lab valkey-cli MGET \
   report:product_quality_report:count
 ```
 
+Примеры проверки одной записи в бонусных БД:
+
+```bash
+docker exec mongodb_lab mongosh -u root -p root --authenticationDatabase admin --quiet --eval "
+db.getSiblingDB('reports').product_sales_report.findOne()
+"
+
+docker exec cassandra_lab cqlsh -e "
+select * from reports.product_sales_report limit 1;
+"
+
+docker exec neo4j_lab cypher-shell -u neo4j -p password "
+MATCH (n:ProductSalesReport)
+RETURN n.record_id AS id, n.payload AS payload
+LIMIT 1
+"
+
+docker exec valkey_lab valkey-cli GET report:product_sales_report:1
+```
+
 Ожидаемые количества для всех БД:
 
 ```text
@@ -220,6 +240,10 @@ store_sales_report      10000
 supplier_sales_report   10000
 time_sales_report          12
 ```
+
+### 7. Служебные файлы
+
+Файл `.gitignore` нужен, чтобы не добавлять в репозиторий локальные и сгенерированные файлы: Python-кэш `__pycache__`, Jupyter checkpoints, `.DS_Store`, `.env`, Spark warehouse/metastore и логи.
 
 Что необходимо сделать? 
 
