@@ -1,11 +1,4 @@
-"""
-ETL Pipeline: PostgreSQL star/snowflake schema -> ClickHouse reports.
-
-Run inside the spark container:
-    spark-submit \
-      --packages org.postgresql:postgresql:42.6.0,com.clickhouse:clickhouse-jdbc:0.6.0 \
-      /home/jovyan/work/etl_to_clickhouse.py
-"""
+from decimal import Decimal
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
@@ -30,23 +23,25 @@ PG_CONFIG = {
     "driver": "org.postgresql.Driver",
 }
 
-CH_CONFIG = {
-    "url": "jdbc:clickhouse://clickhouse:8123/reports",
-    "user": "default",
-    "password": "",
-    "driver": "com.clickhouse.jdbc.ClickHouseDriver",
-}
+
+REPORT_TABLES = [
+    "product_sales_report",
+    "customer_sales_report",
+    "time_sales_report",
+    "store_sales_report",
+    "supplier_sales_report",
+    "product_quality_report",
+]
 
 
-def create_spark_session():
-    return (
-        SparkSession.builder.appName("ETL to ClickHouse Reports")
-        .config(
-            "spark.jars.packages",
-            "org.postgresql:postgresql:42.6.0,com.clickhouse:clickhouse-jdbc:0.6.0",
-        )
+def create_spark_session(app_name):
+    spark = (
+        SparkSession.builder.appName(app_name)
+        .config("spark.jars.packages", "org.postgresql:postgresql:42.6.0")
         .getOrCreate()
     )
+    spark.sparkContext.setLogLevel("WARN")
+    return spark
 
 
 def pg_properties():
@@ -58,26 +53,7 @@ def pg_properties():
 
 
 def read_pg_table(spark, table_name):
-    df = spark.read.jdbc(url=PG_CONFIG["url"], table=table_name, properties=pg_properties())
-    print(f"Read {table_name}: {df.count()} rows")
-    return df.cache()
-
-
-def write_clickhouse(df, table_name):
-    safe_df = df.na.fill(0).na.fill("")
-    (
-        safe_df.coalesce(1)
-        .write.format("jdbc")
-        .option("url", CH_CONFIG["url"])
-        .option("dbtable", table_name)
-        .option("user", CH_CONFIG["user"])
-        .option("password", CH_CONFIG["password"])
-        .option("driver", CH_CONFIG["driver"])
-        .option("createTableOptions", "ENGINE = MergeTree() ORDER BY tuple()")
-        .mode("overwrite")
-        .save()
-    )
-    print(f"Wrote {safe_df.count()} rows to ClickHouse table {table_name}")
+    return spark.read.jdbc(url=PG_CONFIG["url"], table=table_name, properties=pg_properties()).cache()
 
 
 def load_sales_mart(spark):
@@ -128,7 +104,6 @@ def load_sales_mart(spark):
             "quarter",
         )
     ).cache()
-    print(f"Sales mart rows: {sales.count()}")
     return sales, dim_customer
 
 
@@ -183,10 +158,7 @@ def time_sales_report(sales):
             round(avg("sale_total_price"), 2).alias("avg_order_amount"),
         )
         .withColumn("previous_month_revenue", lag("monthly_revenue").over(period_window))
-        .withColumn(
-            "revenue_delta",
-            round(col("monthly_revenue") - col("previous_month_revenue"), 2),
-        )
+        .withColumn("revenue_delta", round(col("monthly_revenue") - col("previous_month_revenue"), 2))
         .withColumn("period", lit("month"))
         .orderBy("year", "month")
     )
@@ -235,10 +207,9 @@ def supplier_sales_report(sales):
 
 def product_quality_report(product_report):
     correlation = product_report.select(
-        corr(
-            col("avg_rating").cast("double"),
-            col("total_quantity_sold").cast("double"),
-        ).alias("rating_sales_quantity_correlation")
+        corr(col("avg_rating").cast("double"), col("total_quantity_sold").cast("double")).alias(
+            "rating_sales_quantity_correlation"
+        )
     )
     best_rating_window = Window.orderBy(col("avg_rating").desc(), col("total_reviews").desc())
     worst_rating_window = Window.orderBy(col("avg_rating").asc(), col("total_reviews").desc())
@@ -267,27 +238,30 @@ def product_quality_report(product_report):
     )
 
 
-def main():
-    spark = create_spark_session()
-    try:
-        sales, dim_customer = load_sales_mart(spark)
-
-        reports = {
-            "product_sales_report": product_sales_report(sales),
-            "customer_sales_report": customer_sales_report(sales, dim_customer),
-            "time_sales_report": time_sales_report(sales),
-            "store_sales_report": store_sales_report(sales),
-            "supplier_sales_report": supplier_sales_report(sales),
-        }
-        reports["product_quality_report"] = product_quality_report(reports["product_sales_report"])
-
-        for table_name, report_df in reports.items():
-            write_clickhouse(report_df, table_name)
-
-        print("\nClickHouse reports ETL finished successfully.")
-    finally:
-        spark.stop()
+def build_reports(spark):
+    sales, dim_customer = load_sales_mart(spark)
+    product_report = product_sales_report(sales)
+    return {
+        "product_sales_report": product_report,
+        "customer_sales_report": customer_sales_report(sales, dim_customer),
+        "time_sales_report": time_sales_report(sales),
+        "store_sales_report": store_sales_report(sales),
+        "supplier_sales_report": supplier_sales_report(sales),
+        "product_quality_report": product_quality_report(product_report),
+    }
 
 
-if __name__ == "__main__":
-    main()
+def normalize_df(df):
+    return df.na.fill(0).na.fill("")
+
+
+def json_safe(value):
+    if isinstance(value, Decimal):
+        return float(value)
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
+def row_to_json_dict(row):
+    return {key: json_safe(value) for key, value in row.asDict(recursive=True).items()}
